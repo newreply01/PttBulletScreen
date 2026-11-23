@@ -1,0 +1,34 @@
+{
+  "manifest_version": 3,
+  "name": "PTT 跨網頁推文彈幕引擎",
+  "version": "2.1.0",
+  "description": "支援點擊工具列圖示一鍵啟用/停用、背景抓取 Stock 推文與跨分頁同步彈幕（倍速 15x ~ 300x，含 HH:MM 時間）",
+  "permissions": [
+    "storage",
+    "tabs",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://www.ptt.cc/*",
+    "https://term.ptt.cc/*",
+    "<all_urls>"
+  ],
+  "action": {
+    "default_title": "PTT 彈幕控制台",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

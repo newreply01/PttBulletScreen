@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PTT 彈幕控制台</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+    html {
+      width: 480px;
+      max-width: 480px;
+      overflow-x: hidden;
+    }
+    body {
+      margin: 0;
+      width: 480px;
+      max-width: 480px;
+      overflow-x: hidden;
+      background: #14141a;
+      color: #eee;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang TC", "Microsoft JhengHei", sans-serif;
+      font-size: 12px;
+      padding: 10px 12px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .popup-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid #2a2a34;
+    }
+    .popup-title {
+      font-size: 14px;
+      font-weight: 800;
+      color: #69f0ae;
+      letter-spacing: 0.3px;
+    }
+    #popup-toast {
+      min-height: 18px;
+      font-size: 11px;
+      color: #ffd54f;
+      background: rgba(255, 213, 79, 0.1);
+      border: 1px solid rgba(255, 213, 79, 0.3);
+      border-radius: 4px;
+      padding: 3px 8px;
+      display: none;
+    }
+    #popup-toast.show {
+      display: block;
+    }
+    #article-banner {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid #2e2e3a;
+      border-radius: 6px;
+      padding: 6px 8px;
+    }
+    .article-meta-top {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }
+    .board-pill {
+      background: rgba(0, 230, 118, 0.16);
+      color: #69f0ae;
+      border: 1px solid rgba(0, 230, 118, 0.4);
+      border-radius: 4px;
+      padding: 1px 6px;
+      font-weight: 700;
+      font-size: 11px;
+      flex-shrink: 0;
+    }
+    #article-title-text {
+      color: #f5f5f5;
+      font-weight: 600;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1;
+    }
+    .article-meta-sub {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 6px;
+      font-family: monospace;
+      font-size: 11px;
+    }
+    .article-sub-left {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+      flex-wrap: wrap;
+    }
+    #article-short-id {
+      color: #b39ddb;
+    }
+    #article-rule-badge {
+      color: #ffab40;
+    }
+    .article-sub-right {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    #article-push-count {
+      color: #ffd54f;
+      font-weight: 700;
+    }
+    #article-fetched-time {
+      color: #90caf9;
+    }
+    #article-fetch-interval {
+      color: #a5d6a7;
+    }
+    #article-open-link {
+      color: #82b1ff;
+      text-decoration: none;
+      display: none;
+    }
+    #article-open-link:hover {
+      text-decoration: underline;
+    }
+    #board-nav-row {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      background: rgba(41, 121, 255, 0.09);
+      border: 1px solid rgba(130, 177, 255, 0.3);
+      border-radius: 6px;
+      padding: 6px 8px;
+    }
+    #board-nav-row input {
+      background: #18181f;
+      border: 1px solid #444;
+      color: #fff;
+      padding: 4px 7px;
+      border-radius: 4px;
+      font-size: 12px;
+      outline: none;
+    }
+    #cfg-board {
+      width: 74px;
+      color: #80cbc4 !important;
+      font-weight: 700;
+    }
+    #cfg-query {
+      flex: 1;
+      min-width: 70px;
+    }
+    .info-help-btn {
+      width: 22px;
+      height: 22px;
+      padding: 0;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1;
+      background: rgba(130, 177, 255, 0.14);
+      color: #82b1ff;
+      border: 1px solid rgba(130, 177, 255, 0.45);
+    }
+    .info-help-btn:hover,
+    .info-help-btn.active-help {
+      background: #1565c0;
+      color: #fff;
+      border-color: #82b1ff;
+    }
+    #board-help-popover {
+      position: absolute;
+      top: calc(100% + 6px);
+      left: 0;
+      right: 0;
+      z-index: 60;
+      background: #1b1b24;
+      border: 1px solid #5c6bc0;
+      border-radius: 7px;
+      padding: 10px 11px;
+      box-shadow: 0 10px 26px rgba(0, 0, 0, 0.88);
+      display: none;
+      max-height: 270px;
+      overflow-y: auto;
+      font-size: 11px;
+      line-height: 1.5;
+    }
+    #board-help-popover.board-help-visible {
+      display: block;
+    }
+    .help-popover-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 7px;
+      padding-bottom: 5px;
+      border-bottom: 1px solid #2e2e3d;
+      color: #82b1ff;
+      font-weight: 700;
+      font-size: 12px;
+    }
+    .help-close-btn {
+      padding: 1px 6px;
+      font-size: 11px;
+      background: #2b2b38;
+      border: 1px solid #444;
+      color: #ccc;
+      border-radius: 4px;
+    }
+    .help-section {
+      margin-bottom: 8px;
+    }
+    .help-section:last-child {
+      margin-bottom: 0;
+    }
+    .help-section-title {
+      color: #ffd54f;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    .help-desc {
+      color: #cfd8dc;
+      margin-bottom: 4px;
+    }
+    .help-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+    .help-chip {
+      padding: 2px 7px;
+      font-size: 11px;
+      border-radius: 12px;
+      background: #262936;
+      border: 1px solid #455a64;
+      color: #80cbc4;
+    }
+    .help-chip:hover {
+      background: #00695c;
+      color: #fff;
+      border-color: #4db6ac;
+    }
+    .help-query-chip {
+      color: #ffe082;
+      border-color: #6d5b28;
+    }
+    .help-query-chip:hover {
+      background: #795548;
+      color: #fff;
+      border-color: #ffd54f;
+    }
+    #help-candidates-list {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .candidate-item {
+      width: 100%;
+      text-align: left;
+      padding: 3px 6px;
+      font-size: 11px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid #323240;
+      border-radius: 4px;
+      color: #e0e0e0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .candidate-item:hover {
+      background: rgba(0, 200, 83, 0.16);
+      border-color: #00e676;
+      color: #fff;
+    }
+    .help-empty {
+      color: #888;
+      font-style: italic;
+    }
+    .help-tip {
+      color: #b0bec5;
+      background: rgba(255, 255, 255, 0.04);
+      border-left: 3px solid #69f0ae;
+      padding: 4px 7px;
+      border-radius: 0 4px 4px 0;
+    }
+    .help-tip code {
+      color: #69f0ae;
+      font-family: monospace;
+    }
+    #btn-bg-fetch-stock {
+      background: #00c853;
+      color: #000;
+      font-weight: 700;
+      border-color: #00e676;
+    }
+    #btn-force-fetch {
+      background: #1565c0;
+      color: #fff;
+      font-weight: 600;
+      border-color: #42a5f5;
+    }
+    #btn-force-fetch:hover:not(:disabled) {
+      background: #1976d2;
+    }
+    #btn-force-fetch:disabled {
+      opacity: 0.6;
+      cursor: wait;
+    }
+    .scrubber-wrapper {
+      position: relative;
+      width: 100%;
+      height: 38px;
+      display: flex;
+      align-items: flex-end;
+      margin-top: 2px;
+    }
+    #heatmap-svg {
+      position: absolute;
+      bottom: 8px;
+      left: 0;
+      width: 100%;
+      height: 24px;
+      pointer-events: none;
+    }
+    #peak-markers-layer {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 28px;
+      pointer-events: none;
+      z-index: 4;
+    }
+    .peak-flag {
+      position: absolute;
+      top: 0;
+      transform: translateX(-50%);
+      pointer-events: auto;
+      cursor: pointer;
+      background: #ff6d00;
+      color: #fff;
+      font-size: 10px;
+      font-weight: 800;
+      padding: 1px 5px;
+      border-radius: 3px;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.6);
+      white-space: nowrap;
+      border: 1px solid #ffd180;
+    }
+    .peak-flag::after {
+      content: '';
+      position: absolute;
+      left: 50%;
+      top: 100%;
+      transform: translateX(-50%);
+      width: 1.5px;
+      height: 14px;
+      background: rgba(255, 171, 64, 0.85);
+    }
+    #timeline-slider {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 100%;
+      height: 6px;
+      background: rgba(255, 255, 255, 0.2);
+      border-radius: 3px;
+      outline: none;
+      cursor: pointer;
+      z-index: 3;
+      margin: 0;
+    }
+    #timeline-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: #00e676;
+      cursor: pointer;
+      box-shadow: 0 0 6px #00e676;
+    }
+    #hover-tooltip {
+      position: absolute;
+      bottom: 42px;
+      left: 0;
+      background: rgba(0, 0, 0, 0.94);
+      border: 1px solid #666;
+      padding: 5px 9px;
+      border-radius: 6px;
+      font-size: 11px;
+      white-space: nowrap;
+      pointer-events: none;
+      display: none;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      z-index: 30;
+    }
+    .btn-row {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 5px;
+    }
+    .btn-row button {
+      padding: 5px 6px;
+    }
+    .select-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 6px;
+    }
+    button, select, input[type="text"] {
+      background: #282832;
+      color: #fff;
+      border: 1px solid #444;
+      padding: 5px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      outline: none;
+    }
+    button, select {
+      cursor: pointer;
+    }
+    button:hover {
+      background: #383844;
+    }
+    button.active {
+      background: #00c853;
+      color: #000;
+      font-weight: 700;
+      border-color: #00e676;
+    }
+    button.off-state {
+      background: #424242;
+      color: #bdbdbd;
+      border-color: #616161;
+    }
+    button.live-active {
+      background: #d50000;
+      color: #fff;
+      font-weight: 700;
+      border-color: #ff5252;
+    }
+    #btn-recent-5m {
+      background: #0277bd;
+      color: #fff;
+      font-weight: 700;
+      border-color: #29b6f6;
+    }
+    #btn-recent-5m:hover:not(:disabled) {
+      background: #0288d1;
+    }
+    #btn-recent-5m:disabled {
+      opacity: 0.6;
+      cursor: wait;
+    }
+    .keyword-box {
+      display: flex;
+      align-items: center;
+      flex: 1;
+      background: #202028;
+      border: 1px solid #444;
+      border-radius: 4px;
+      padding: 1px 4px;
+    }
+    #keyword-input {
+      border: none;
+      background: transparent;
+      flex: 1;
+      min-width: 80px;
+      padding: 4px 6px;
+      color: #ffd700;
+    }
+    #btn-kw-mode {
+      border: none;
+      background: #383844;
+      padding: 3px 7px;
+      font-size: 11px;
+      border-radius: 3px;
+    }
+    #btn-kw-mode.filter-mode {
+      background: #ffab00;
+      color: #000;
+      font-weight: 700;
+    }
+    .bottom-status-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .sentiment-box {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid #32323c;
+      border-radius: 5px;
+      padding: 4px 8px;
+      min-width: 190px;
+    }
+    .sentiment-labels {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      font-family: monospace;
+      gap: 6px;
+    }
+    .s-push { color: #69f0ae; font-weight: 600; }
+    .s-boo  { color: #ff5252; font-weight: 600; }
+    .s-arr  { color: #b0bec5; }
+    .sentiment-bar {
+      display: flex;
+      width: 100%;
+      height: 4px;
+      border-radius: 3px;
+      overflow: hidden;
+      background: #222;
+    }
+    .bar-push { background: #00e676; }
+    .bar-arr  { background: #90a4ae; }
+    .bar-boo  { background: #ff5252; }
+    #time-display {
+      font-family: monospace;
+      font-size: 11px;
+      color: #80cbc4;
+      flex: 1;
+      text-align: right;
+    }
+  </style>
+</head>
+<body>
+  <div class="popup-header">
+    <span class="popup-title">🎬 PTT 跨網頁推文彈幕控制台</span>
+    <button id="btn-ext-power" class="active" title="啟用或停用整個 PTT 彈幕套件">🔌 套件: 已啟用</button>
+  </div>
+
+  <div id="popup-toast"></div>
+
+  <div id="article-banner">
+    <div class="article-meta-top">
+      <span class="board-pill" id="article-board-badge">Stock</span>
+      <span id="article-title-text">載入中...</span>
+    </div>
+    <div class="article-meta-sub">
+      <div class="article-sub-left">
+        <span id="article-short-id"></span>
+        <span id="article-rule-badge"></span>
+      </div>
+      <div class="article-sub-right">
+        <span id="article-push-count">推文數：0 則</span>
+        <span id="article-fetched-time">更新: --:--:--</span>
+        <span id="article-fetch-interval">間隔: 5s</span>
+        <a id="article-open-link" target="_blank" rel="noopener noreferrer">原文 ↗</a>
+      </div>
+    </div>
+  </div>
+
+  <div id="board-nav-row">
+    <input
+      type="text"
+      id="cfg-board"
+      value="Stock"
+      placeholder="看板"
+      title="輸入 PTT 看板英文名稱（不分大小寫，按 Enter 可直接抓文）&#10;常用看板：Stock (股板)、Gossiping (八卦)、Baseball (棒球)、NBA、C_Chat (希洽)、Lifeismoney (省錢)、Tech_Job (科技)"
+    >
+    <input
+      type="text"
+      id="cfg-query"
+      value="閒聊"
+      placeholder="文章關鍵字(如 閒聊)"
+      title="輸入想鎖定的文章標題關鍵字（按 Enter 可直接抓文）&#10;• 填寫關鍵字（如：閒聊、LIVE、盤中、炸裂）：自動鎖定該板最新符合標題的文章&#10;• 留空不填：直接抓取該看板最新發表的一篇文章"
+    >
+    <button type="button" id="btn-board-help" class="info-help-btn" title="移入或點擊查看看板/文章監控說明、常用板名與最新候選文章">ⓘ</button>
+    <button id="btn-bg-fetch-stock" title="在背景抓取看板文章推文">📥 背景抓文</button>
+    <button id="btn-force-fetch" title="忽略冷卻時間，立即重新抓取最新文章與推文">🔄 立即重抓</button>
+
+    <div id="board-help-popover" role="dialog" aria-label="看板與文章監控說明">
+      <div class="help-popover-header">
+        <span>📌 如何監控其他看板 / 文章</span>
+        <button type="button" id="btn-close-board-help" class="help-close-btn" title="關閉說明">✕</button>
+      </div>
+      <div class="help-section">
+        <div class="help-section-title">① 輸入看板英文名（不分大小寫，點擊快速帶入）</div>
+        <div class="help-chips">
+          <button type="button" class="help-chip help-board-chip" data-board="Stock">Stock 股板</button>
+          <button type="button" class="help-chip help-board-chip" data-board="Gossiping">Gossiping 八卦</button>
+          <button type="button" class="help-chip help-board-chip" data-board="Baseball">Baseball 棒球</button>
+          <button type="button" class="help-chip help-board-chip" data-board="NBA">NBA</button>
+          <button type="button" class="help-chip help-board-chip" data-board="C_Chat">C_Chat 希洽</button>
+          <button type="button" class="help-chip help-board-chip" data-board="Lifeismoney">Lifeismoney 省錢</button>
+          <button type="button" class="help-chip help-board-chip" data-board="Tech_Job">Tech_Job 科技</button>
+        </div>
+      </div>
+      <div class="help-section">
+        <div class="help-section-title">② 文章標題關鍵字（按 Enter 可直接抓文）</div>
+        <div class="help-desc">• <b>填寫關鍵字</b>：從該板最新兩頁與置底文中抓取最新符合的文章。<br>• <b>留空不填</b>：自動抓取該看板目前最新發表的一篇文章。</div>
+        <div class="help-chips">
+          <button type="button" class="help-chip help-query-chip" data-query="閒聊">閒聊</button>
+          <button type="button" class="help-chip help-query-chip" data-query="LIVE">LIVE</button>
+          <button type="button" class="help-chip help-query-chip" data-query="盤中">盤中</button>
+          <button type="button" class="help-chip help-query-chip" data-query="">留空 (抓最新文章)</button>
+        </div>
+      </div>
+      <div class="help-section">
+        <div class="help-section-title">③ 目前看板最新候選文章（點擊直接鎖定）</div>
+        <div id="help-candidates-list"><span class="help-empty">尚未載入候選文章</span></div>
+      </div>
+      <div class="help-section">
+        <div class="help-tip">💡 <b>網頁直連</b>：直接在 Chrome 開啟任一 <code>www.ptt.cc/bbs/...</code> 文章頁時，套件也會自動切換監控該篇文章。</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="scrubber-wrapper" id="scrubber-wrapper">
+    <div id="hover-tooltip"></div>
+    <div id="peak-markers-layer"></div>
+    <svg id="heatmap-svg" preserveAspectRatio="none"></svg>
+    <input type="range" id="timeline-slider" min="0" max="1000" value="0">
+  </div>
+
+  <div class="btn-row">
+    <button id="btn-play">▶ 播放</button>
+    <button id="btn-recent-5m" title="清空目前排隊中的舊彈幕，立即從最近 5 分鐘內的推文開始播放並維持 Live 追文">⏩ 近5分</button>
+    <button id="btn-live" class="live-active">📡 Live 追文: 開</button>
+    <button id="btn-cross-tab" class="active">🌐 跨分頁彈幕: 開</button>
+    <button id="btn-boo-only">🔥 只看噓文</button>
+  </div>
+
+  <div class="select-grid">
+    <select id="speed-select" title="歷史重播倍速">
+      <option value="15000">⚡ 重播: 15x 速</option>
+      <option value="30000">⚡ 重播: 30x 速</option>
+      <option value="60000" selected>⚡ 重播: 60x 速</option>
+      <option value="120000">⚡ 重播: 120x 速</option>
+      <option value="180000">⚡ 重播: 180x 速</option>
+      <option value="300000">⚡ 重播: 300x 速</option>
+    </select>
+    <select id="fly-duration-select" title="設定彈幕飛越畫面的速度（秒數越長飛越慢）">
+      <option value="18">🐢 飛速: 極慢 (18s)</option>
+      <option value="14">🐢 飛速: 慢速 (14s)</option>
+      <option value="10" selected>🚀 飛速: 適中 (10s)</option>
+      <option value="7">🚀 飛速: 快速 (7s)</option>
+      <option value="5">⚡ 飛速: 極快 (5s)</option>
+    </select>
+    <select id="min-interval-select" title="設定背景最小抓取間隔時間（秒）">
+      <option value="3">⏱ 間隔: 3s</option>
+      <option value="5" selected>⏱ 間隔: 5s</option>
+      <option value="10">⏱ 間隔: 10s</option>
+      <option value="15">⏱ 間隔: 15s</option>
+      <option value="30">⏱ 間隔: 30s</option>
+      <option value="60">⏱ 間隔: 60s</option>
+      <option value="120">⏱ 間隔: 120s</option>
+      <option value="180">⏱ 間隔: 180s</option>
+      <option value="300">⏱ 間隔: 300s</option>
+    </select>
+    <select id="max-batch-select" title="設定每波最多發射幾則彈幕">
+      <option value="3">💬 每次最多: 3則</option>
+      <option value="5">💬 每次最多: 5則</option>
+      <option value="10" selected>💬 每次最多: 10則</option>
+      <option value="15">💬 每次最多: 15則</option>
+      <option value="20">💬 每次最多: 20則</option>
+      <option value="30">💬 每次最多: 30則</option>
+      <option value="50">💬 每次最多: 50則</option>
+    </select>
+  </div>
+
+  <div class="btn-row">
+    <div class="keyword-box">
+      <input type="text" id="keyword-input" placeholder="彈幕高亮/篩選關鍵字...">
+      <button id="btn-kw-mode">模式: 高亮</button>
+    </div>
+  </div>
+
+  <div class="bottom-status-row">
+    <div class="sentiment-box">
+      <div class="sentiment-labels">
+        <span class="s-push" id="stat-push">推 0 (0%)</span>
+        <span class="s-arr" id="stat-arr">→ 0 (0%)</span>
+        <span class="s-boo" id="stat-boo">噓 0 (0%)</span>
+      </div>
+      <div class="sentiment-bar">
+        <div class="bar-push" id="bar-push" style="width: 33.3%"></div>
+        <div class="bar-arr" id="bar-arr" style="width: 33.3%"></div>
+        <div class="bar-boo" id="bar-boo" style="width: 33.3%"></div>
+      </div>
+    </div>
+    <div id="time-display">就緒</div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
