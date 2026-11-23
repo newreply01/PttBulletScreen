@@ -17,7 +17,7 @@
   const autoLiveOnLoad = urlObj.searchParams.get('autolive') === '1';
 
   const ALLOWED_MIN_INTERVAL_SECONDS = [3, 5, 10, 15, 30, 60, 120, 180, 300];
-  const DEFAULT_MIN_INTERVAL_SECONDS = 5;
+  const DEFAULT_MIN_INTERVAL_SECONDS = 30;
   const ALLOWED_FLY_DURATION_SECONDS = [5, 7, 10, 14, 18];
   const DEFAULT_FLY_DURATION_SECONDS = 10;
   const ALLOWED_MAX_BATCH_COUNTS = [3, 5, 10, 15, 20, 30, 50];
