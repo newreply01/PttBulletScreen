@@ -844,8 +844,10 @@ function finalizeArticleStateAndBroadcast({
 }) {
   const prevLen = sharedState.pushes.length;
   const startTime = pushes.length > 0 ? pushes[0].virtualTime : Date.now();
-  const endTime =
-    pushes.length > 0 ? pushes[pushes.length - 1].virtualTime + 5000 : startTime + 60000;
+  const lastPushTime = pushes.length > 0 ? pushes[pushes.length - 1].virtualTime : startTime;
+  // 時間軸最右端保留至當下時間往後 1 小時（3600000ms），方便隨時間推移拖曳滑桿至最新推文
+  const oneHourAhead = Date.now() + 3600000;
+  const endTime = Math.max(lastPushTime + 5000, oneHourAhead, startTime + 60000);
   const totalDuration = Math.max(endTime - startTime, 60000);
 
   const m = articleUrl.match(/M\.(\d+)\.A\.[^.]+\.html/i);
@@ -1578,10 +1580,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
 
       const startTime = mergedPushes.length > 0 ? mergedPushes[0].virtualTime : Date.now();
-      const endTime =
-        mergedPushes.length > 0
-          ? mergedPushes[mergedPushes.length - 1].virtualTime + 5000
-          : startTime + 60000;
+      const lastPushTime = mergedPushes.length > 0 ? mergedPushes[mergedPushes.length - 1].virtualTime : startTime;
+      const oneHourAhead = Date.now() + 3600000;
+      const endTime = Math.max(lastPushTime + 5000, oneHourAhead, startTime + 60000);
       const totalDuration = Math.max(endTime - startTime, 60000);
 
       sharedState.pushes = mergedPushes;

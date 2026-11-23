@@ -515,7 +515,9 @@
 
       pushes = state.pushes;
       startTime = state.startTime || (pushes[0]?.virtualTime ?? Date.now());
-      endTime = state.endTime || (pushes.length > 0 ? pushes[pushes.length - 1].virtualTime + 5000 : startTime + 60000);
+      const lastPushTime = pushes.length > 0 ? pushes[pushes.length - 1].virtualTime : startTime;
+      const oneHourAhead = Date.now() + 3600000;
+      endTime = state.endTime || Math.max(lastPushTime + 5000, oneHourAhead, startTime + 60000);
       totalDuration = Math.max(endTime - startTime, 60000);
 
       if (changed) {
