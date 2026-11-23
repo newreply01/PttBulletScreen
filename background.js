@@ -115,7 +115,7 @@ function saveSessionMetaToStorage() {
         pushes: sharedState.pushes.slice(-2500)
       }
     });
-  } catch (_) {}
+  } catch (_) { }
 }
 
 function sanitizeMinFetchIntervalMs(rawMsOrSec, isSeconds = false) {
@@ -203,7 +203,7 @@ function broadcastToAllTabs(message) {
     chrome.runtime.sendMessage(message, () => {
       void chrome.runtime.lastError;
     });
-  } catch (_) {}
+  } catch (_) { }
 }
 
 function findNextIndexByTime(pushes, targetTime) {
@@ -257,7 +257,7 @@ function clearDanmakuQueue() {
   saveSessionMetaToStorage();
   try {
     chrome.storage.local.remove(STORAGE_RUNTIME_CACHE_KEY);
-  } catch (_) {}
+  } catch (_) { }
 
   const snapshot = getSnapshot();
   broadcastToAllTabs({
@@ -1074,7 +1074,7 @@ async function backgroundFetchStockArticle({
   if (bootstrapPromise) {
     try {
       await bootstrapPromise;
-    } catch (_) {}
+    } catch (_) { }
   }
   if (!sharedState.enabled) {
     return { ok: false, error: '擴充功能目前處於停用狀態' };
@@ -1180,7 +1180,7 @@ async function setMinFetchIntervalSeconds(seconds) {
 
   try {
     await chrome.storage.local.set({ [STORAGE_MIN_INTERVAL_KEY]: nextMs });
-  } catch (_) {}
+  } catch (_) { }
 
   const snapshot = getSnapshot();
   broadcastToAllTabs({
@@ -1200,7 +1200,7 @@ async function setMinFetchIntervalSeconds(seconds) {
       enableLive: true,
       checkBoardIndex: false,
       isScheduledPoll: true
-    }).catch(() => {});
+    }).catch(() => { });
   }
 
   return snapshot;
@@ -1213,7 +1213,7 @@ async function setFlyDurationSeconds(seconds) {
 
   try {
     await chrome.storage.local.set({ [STORAGE_FLY_DURATION_KEY]: nextMs });
-  } catch (_) {}
+  } catch (_) { }
 
   const snapshot = getSnapshot();
   broadcastToAllTabs({
@@ -1230,7 +1230,7 @@ async function setMaxBatchCount(count) {
 
   try {
     await chrome.storage.local.set({ [STORAGE_MAX_BATCH_KEY]: nextCount });
-  } catch (_) {}
+  } catch (_) { }
 
   const snapshot = getSnapshot();
   broadcastToAllTabs({
@@ -1264,7 +1264,7 @@ async function setFilterOptions(options = {}) {
         keywordFilterOnly: sharedState.keywordFilterOnly
       }
     });
-  } catch (_) {}
+  } catch (_) { }
 
   const snapshot = getSnapshot();
   broadcastToAllTabs({
@@ -1289,7 +1289,7 @@ async function setExtensionEnabled(nextEnabled, triggerInitialFetchIfNeeded = fa
 
   try {
     await chrome.storage.local.set({ [STORAGE_ENABLED_KEY]: sharedState.enabled });
-  } catch (_) {}
+  } catch (_) { }
   saveSessionMetaToStorage();
 
   const snapshot = getSnapshot();
@@ -1325,7 +1325,7 @@ chrome.runtime.onConnect.addListener((port) => {
           void chrome.runtime.lastError;
         });
         port.postMessage({ type: 'PONG', ts: Date.now() });
-      } catch (_) {}
+      } catch (_) { }
     }
   });
   port.onDisconnect.addListener(() => {
@@ -1478,7 +1478,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'GET_DANMAKU_STATE') {
     Promise.resolve(bootstrapPromise)
-      .catch(() => {})
+      .catch(() => { })
       .finally(() => {
         sendResponse({ ok: true, state: getSnapshot() });
       });
@@ -1655,7 +1655,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (bootstrapPromise) {
           try {
             await bootstrapPromise;
-          } catch (_) {}
+          } catch (_) { }
         }
         if (
           sharedState.enabled &&
@@ -1668,7 +1668,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             enableLive: true,
             force: false,
             checkBoardIndex: false
-          }).catch(() => {});
+          }).catch(() => { });
         }
         sharedState.isLiveMode = true;
         sharedState.isPlaying = false;
@@ -1859,7 +1859,7 @@ bootstrapPromise = (async function restoreRuntimeStorage() {
         };
       }
     }
-  } catch (_) {}
+  } catch (_) { }
 
   sharedState.isPlaying = false;
   if (sharedState.enabled) {
@@ -1879,7 +1879,7 @@ bootstrapPromise = (async function restoreRuntimeStorage() {
       enableLive: true,
       force: sharedState.pushes.length === 0,
       checkBoardIndex: sharedState.pushes.length === 0
-    }).catch(() => {});
+    }).catch(() => { });
   }
 
   // 自動將最新的 content.js 注入所有已開啟的 http/https 網頁，載入套件後不需逐一重整分頁

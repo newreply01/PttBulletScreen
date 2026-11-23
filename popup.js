@@ -748,7 +748,7 @@
     const sec = normalizeIntervalSeconds(minIntervalSelect.value);
     sendBgMessage({ type: 'SET_MIN_FETCH_INTERVAL', seconds: sec }).then((res) => {
       if (res?.ok && res.state) applyState(res.state);
-      showToast(`⏱ 最小抓取間隔已設為 ${sec} 秒`);
+      showToast(`⏳ 最小抓取間隔已設為 ${sec} 秒`);
     });
   });
 
