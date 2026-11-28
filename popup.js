@@ -682,8 +682,9 @@
       });
       if (res?.ok && res.state) {
         applyState(res.state);
-        const added = Number(res.addedCount || 0);
-        showToast(added > 0 ? `✅ 已更新至 ${res.state.pushes.length} 則推文（+${added} 新彈幕）` : `✅ 已更新至 ${res.state.pushes.length} 則推文`);
+        const shown = Number(res.addedCount || 0);
+        const total = res.state.pushCount ?? res.state.pushes?.length ?? pushes.length;
+        showToast(shown > 0 ? `✅ 已更新：共 ${total} 則推文，畫面顯示最新 ${shown} 則` : `✅ 已更新：共 ${total} 則推文`);
       } else {
         showToast(`❌ 抓取失敗：${res?.error || '未知錯誤'}`);
       }

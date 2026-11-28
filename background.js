@@ -660,6 +660,7 @@ let longPollWatcher = {
   running: false,
   lastModified: '',
   etag: '',
+  invalidLastModified: '',
   latest: null,
   lastHealthyAt: 0,
   lastChangeAt: 0
@@ -688,6 +689,7 @@ function ensureLongPollWatcher() {
   longPollWatcher.running = true;
   longPollWatcher.lastModified = '';
   longPollWatcher.etag = '';
+  longPollWatcher.invalidLastModified = '';
 
   runLongPollWatcher(gen, url)
     .catch((err) => console.warn('[PTT 彈幕診斷] longpoll 監聽器異常結束:', err?.message || err))
@@ -730,8 +732,19 @@ async function runLongPollWatcher(gen, url) {
       if (result.status === 200 && data && typeof data.size === 'number' && data.sig) {
         const prev = longPollWatcher.latest;
         const isDuplicate = Boolean(prev && prev.size === data.size && prev.sig === data.sig);
-        longPollWatcher.lastModified = result.lastModified;
-        longPollWatcher.etag = result.etag;
+        const isKnownInvalidId =
+          Boolean(result.lastModified) && result.lastModified === longPollWatcher.invalidLastModified;
+        if (isKnownInvalidId) {
+          // 快取仍回傳已失效的訊息 ID：size/sig 資料可用，但不能拿來等待下一則，
+          // 維持無條件請求並稍候再查，直到出現新訊息、拿到有效 ID 才回到正常長輪詢
+          longPollWatcher.lastModified = '';
+          longPollWatcher.etag = '';
+          delayMs = LONGPOLL_WATCH_DUP_DELAY_MS;
+        } else {
+          longPollWatcher.lastModified = result.lastModified;
+          longPollWatcher.etag = result.etag;
+          longPollWatcher.invalidLastModified = '';
+        }
         longPollWatcher.latest = {
           size: data.size,
           sig: data.sig,
@@ -749,8 +762,16 @@ async function runLongPollWatcher(gen, url) {
         // 304 / Cloudflare 522 等：代表這段時間沒有新變動，立即重新掛上
         longPollWatcher.lastHealthyAt = now;
         delayMs = LONGPOLL_WATCH_RETRY_MS;
+      } else if (result.status === 400 && longPollWatcher.lastModified) {
+        // 400「Message ID invalid」：If-Modified-Since 必須是伺服器緩衝區內真實存在的訊息時間。
+        // 常見於監聽剛啟動時拿到的是 CDN 快取的舊回應（其 Last-Modified 已不在緩衝區）。
+        // 記住此失效 ID，改以無條件請求輪詢快取，直到出現新訊息。
+        longPollWatcher.invalidLastModified = longPollWatcher.lastModified;
+        longPollWatcher.lastModified = '';
+        longPollWatcher.etag = '';
+        longPollWatcher.lastHealthyAt = now;
+        delayMs = LONGPOLL_WATCH_RETRY_MS;
       } else {
-        // 例如 400「Message ID invalid」：條件標頭失效，重置後重新訂閱
         console.warn('[PTT 彈幕診斷] longpoll 監聽回應異常:', result.status);
         longPollWatcher.lastModified = '';
         longPollWatcher.etag = '';
@@ -1089,12 +1110,17 @@ function finalizeArticleStateAndBroadcast({
 
   let liveEmitPushes = newlyAddedPushes;
   let clearExistingQueue = false;
-  if (hasStaleCatchup || Boolean(meta.force) || !isSameArticle) {
+  if (meta.force) {
+    // 使用者按「立即抓文」：清空排隊中的舊彈幕，只發射最新一波，讓最新推文立刻出現在畫面上
+    // （若送出多波，最新推文會排在最後一波，需等前面幾波飛完才看得到）
+    liveEmitPushes = (newlyAddedPushes.length > 0 ? newlyAddedPushes : pushes).slice(-sharedState.maxBatchCount);
+    clearExistingQueue = true;
+  } else if (hasStaleCatchup || !isSameArticle) {
     liveEmitPushes = selectInitialPreviewPushes(
       newlyAddedPushes.length > 0 ? newlyAddedPushes : pushes,
       sharedState.maxBatchCount
     );
-    clearExistingQueue = Boolean(meta.force) || !isSameArticle || hasStaleCatchup;
+    clearExistingQueue = true;
   }
 
   const batchId =
@@ -1287,7 +1313,14 @@ async function backgroundFetchStockArticle({
 
   const requestKey = `${targetBoard}::${targetQuery}`;
   if (inflightFetchPromise && inflightFetchKey === requestKey) {
-    return inflightFetchPromise;
+    if (!force) {
+      return inflightFetchPromise;
+    }
+    // 使用者強制抓取時遇到進行中的排程抓取：等它結束後再執行一次強制抓取，
+    // 否則會直接沿用排程結果（不清空佇列、不發射最新一波）
+    try {
+      await inflightFetchPromise;
+    } catch (_) { }
   }
 
   const cooldownMs = getFetchCooldownRemainingMs(isScheduledPoll ? 350 : 0);
