@@ -2,12 +2,10 @@
 (function () {
   'use strict';
 
-  const ALLOWED_MIN_INTERVAL_SECONDS = [3, 5, 10, 15, 30, 60, 120, 180, 300];
-  const DEFAULT_MIN_INTERVAL_SECONDS = 30;
-  const ALLOWED_FLY_DURATION_SECONDS = [5, 7, 10, 14, 18];
-  const DEFAULT_FLY_DURATION_SECONDS = 10;
-  const ALLOWED_MAX_BATCH_COUNTS = [3, 5, 10, 15, 20, 30, 50];
-  const DEFAULT_MAX_BATCH_COUNT = 10;
+  // 共用設定（config.js 於 popup.html 中先載入）
+  const CFG = globalThis.PTT_DANMAKU_CONFIG;
+  const normalizeOption = globalThis.pttDanmakuNormalizeOption;
+  const DEFAULT_BOARD = CFG.DEFAULT_BOARD;
 
   const btnExtPower = document.getElementById('btn-ext-power');
   const popupToast = document.getElementById('popup-toast');
@@ -27,7 +25,6 @@
   const boardHelpPopover = document.getElementById('board-help-popover');
   const btnCloseBoardHelp = document.getElementById('btn-close-board-help');
   const helpCandidatesList = document.getElementById('help-candidates-list');
-  const btnBgFetchStock = document.getElementById('btn-bg-fetch-stock');
   const btnForceFetch = document.getElementById('btn-force-fetch');
 
   const scrubberWrapper = document.getElementById('scrubber-wrapper');
@@ -38,7 +35,8 @@
 
   const btnPlay = document.getElementById('btn-play');
   const btnRecent5m = document.getElementById('btn-recent-5m');
-  const btnLive = document.getElementById('btn-live');
+  const btnModeLive = document.getElementById('btn-mode-live');
+  const btnModeReplay = document.getElementById('btn-mode-replay');
   const btnCrossTab = document.getElementById('btn-cross-tab');
   const btnBooOnly = document.getElementById('btn-boo-only');
 
@@ -46,6 +44,22 @@
   const flyDurationSelect = document.getElementById('fly-duration-select');
   const minIntervalSelect = document.getElementById('min-interval-select');
   const maxBatchSelect = document.getElementById('max-batch-select');
+
+  // 依 config.js 產生下拉選單選項（可選值只在 config.js 維護一份）
+  function populateSelect(selectEl, spec) {
+    selectEl.innerHTML = '';
+    spec.options.forEach((opt) => {
+      const optionEl = document.createElement('option');
+      optionEl.value = String(opt.value);
+      optionEl.textContent = opt.label;
+      selectEl.appendChild(optionEl);
+    });
+    selectEl.value = String(spec.defaultValue);
+  }
+  populateSelect(speedSelect, CFG.REPLAY_SPEED_MS_PER_SEC);
+  populateSelect(flyDurationSelect, CFG.FLY_DURATION_SECONDS);
+  populateSelect(minIntervalSelect, CFG.MIN_FETCH_INTERVAL_SECONDS);
+  populateSelect(maxBatchSelect, CFG.MAX_BATCH_COUNT);
 
   const keywordInput = document.getElementById('keyword-input');
   const btnKwMode = document.getElementById('btn-kw-mode');
@@ -71,11 +85,13 @@
   let booOnly = false;
   let keywordFilterOnly = false;
   let keywords = [];
-  let minFetchIntervalSeconds = DEFAULT_MIN_INTERVAL_SECONDS;
-  let currentBoardName = 'Stock';
+  let minFetchIntervalSeconds = CFG.MIN_FETCH_INTERVAL_SECONDS.defaultValue;
+  let currentBoardName = DEFAULT_BOARD;
   let currentArticleTitle = '';
   let currentArticleUrl = '';
   let lastFetchedAt = 0;
+  let lastFailedAt = 0;
+  let lastError = '';
   let lastDebugInfo = null;
   let isDragging = false;
   const DEFAULT_BOARD_INPUT_TITLE =
@@ -123,20 +139,10 @@
     }[m]));
   }
 
-  function normalizeIntervalSeconds(rawSec) {
-    const parsed = parseInt(rawSec, 10);
-    return ALLOWED_MIN_INTERVAL_SECONDS.includes(parsed) ? parsed : DEFAULT_MIN_INTERVAL_SECONDS;
-  }
-
-  function normalizeFlyDurationSeconds(rawSec) {
-    const parsed = parseInt(rawSec, 10);
-    return ALLOWED_FLY_DURATION_SECONDS.includes(parsed) ? parsed : DEFAULT_FLY_DURATION_SECONDS;
-  }
-
-  function normalizeMaxBatchCount(rawVal) {
-    const parsed = parseInt(rawVal, 10);
-    return ALLOWED_MAX_BATCH_COUNTS.includes(parsed) ? parsed : DEFAULT_MAX_BATCH_COUNT;
-  }
+  const normalizeIntervalSeconds = (rawSec) => normalizeOption(CFG.MIN_FETCH_INTERVAL_SECONDS, rawSec);
+  const normalizeFlyDurationSeconds = (rawSec) => normalizeOption(CFG.FLY_DURATION_SECONDS, rawSec);
+  const normalizeMaxBatchCount = (rawVal) => normalizeOption(CFG.MAX_BATCH_COUNT, rawVal);
+  const normalizeReplaySpeed = (rawVal) => normalizeOption(CFG.REPLAY_SPEED_MS_PER_SEC, rawVal);
 
   function extractShortId(urlStr) {
     if (!urlStr) return '';
@@ -200,7 +206,7 @@
     if (!Array.isArray(candidates) || candidates.length === 0) {
       const emptyEl = document.createElement('span');
       emptyEl.className = 'help-empty';
-      emptyEl.textContent = '目前尚無候選文章列表，請先按「背景抓文」或「立即重抓」';
+      emptyEl.textContent = '目前尚無候選文章列表，請先按「立即抓文」';
       helpCandidatesList.appendChild(emptyEl);
       return;
     }
@@ -213,7 +219,7 @@
       const cleanTitle = extractCandidateTitle(item);
       btn.title = cleanTitle ? `點擊以鎖定文章：${cleanTitle}` : item;
       btn.addEventListener('click', () => {
-        cfgBoardInput.value = currentBoardName || cfgBoardInput.value.trim() || 'Stock';
+        cfgBoardInput.value = currentBoardName || cfgBoardInput.value.trim() || DEFAULT_BOARD;
         cfgQueryInput.value = cleanTitle || item;
         boardQueryEdited = true;
         closeBoardHelpPopover(true);
@@ -224,7 +230,7 @@
   }
 
   function updateInputTooltips(candidates) {
-    const boardLabel = currentBoardName || cfgBoardInput.value.trim() || 'Stock';
+    const boardLabel = currentBoardName || cfgBoardInput.value.trim() || DEFAULT_BOARD;
     cfgBoardInput.title = `目前監控看板：${boardLabel}\n${DEFAULT_BOARD_INPUT_TITLE}`;
     const previewSuffix =
       Array.isArray(candidates) && candidates.length > 0
@@ -238,7 +244,7 @@
     updateInputTooltips(candidates);
     renderHelpCandidates(candidates);
 
-    articleBoardBadge.textContent = currentBoardName || 'Stock';
+    articleBoardBadge.textContent = currentBoardName || DEFAULT_BOARD;
     if (!extensionEnabled) {
       articleTitleText.textContent = '套件已停用';
       articleShortId.textContent = '';
@@ -277,10 +283,20 @@
     }
 
     articlePushCount.textContent = `推文數：${pushes.length} 則`;
-    articleFetchedTime.textContent = `更新: ${formatHhMmSsFromTs(lastFetchedAt)}`;
+    const hasFetchError = Boolean(lastError) && lastFailedAt > 0;
+    articleFetchedTime.classList.toggle('fetch-error', hasFetchError);
+    if (hasFetchError) {
+      articleFetchedTime.textContent = `⚠️ 抓取失敗 ${formatHhMmSsFromTs(lastFailedAt)}`;
+      articleFetchedTime.title =
+        `錯誤：${lastError}\n上次成功更新：${formatHhMmSsFromTs(lastFetchedAt)}\n` +
+        `將於 ${Math.max(minFetchIntervalSeconds, 5)} 秒後自動重試（PTT 伺服器異常時常見 522 / 逾時）`;
+    } else {
+      articleFetchedTime.textContent = `更新: ${formatHhMmSsFromTs(lastFetchedAt)}`;
+      articleFetchedTime.title = '上次成功抓取推文的時間';
+    }
     articleFetchInterval.textContent = isLiveMode
       ? `間隔: ${minFetchIntervalSeconds}s`
-      : `間隔: ${minFetchIntervalSeconds}s (Live關)`;
+      : `間隔: ${minFetchIntervalSeconds}s (重播中)`;
 
     if (currentArticleUrl && /^https?:\/\//i.test(currentArticleUrl)) {
       articleOpenLink.href = currentArticleUrl;
@@ -291,6 +307,7 @@
   }
 
   function updateButtonsUI() {
+    document.body.classList.toggle('ext-disabled', !extensionEnabled);
     btnExtPower.textContent = extensionEnabled ? '🔌 套件: 已啟用' : '🔌 套件: 已停用';
     btnExtPower.classList.toggle('active', extensionEnabled);
     btnExtPower.classList.toggle('off-state', !extensionEnabled);
@@ -306,15 +323,16 @@
       btnPlay.classList.remove('active');
     }
 
-    if (isLiveMode) {
-      btnLive.textContent = '📡 Live 追文: 開';
-      btnLive.classList.add('live-active');
-    } else {
-      btnLive.textContent = '📡 Live 追文: 關';
-      btnLive.classList.remove('live-active');
-    }
+    // 模式切換：Live 顯示「近5分」，重播顯示「播放/暫停」並開放倍速選單
+    btnModeLive.classList.toggle('selected', isLiveMode);
+    btnModeReplay.classList.toggle('selected', !isLiveMode);
+    btnModeLive.setAttribute('aria-pressed', String(isLiveMode));
+    btnModeReplay.setAttribute('aria-pressed', String(!isLiveMode));
+    btnRecent5m.classList.toggle('hidden', !isLiveMode);
+    btnPlay.classList.toggle('hidden', isLiveMode);
+    speedSelect.disabled = isLiveMode;
 
-    btnCrossTab.textContent = crossTabShowEnabled ? '🌐 跨分頁彈幕: 開' : '🌐 跨分頁彈幕: 關';
+    btnCrossTab.textContent = crossTabShowEnabled ? '🌐 跨分頁: 開' : '🌐 跨分頁: 關';
     btnCrossTab.classList.toggle('active', crossTabShowEnabled);
 
     btnBooOnly.classList.toggle('active', booOnly);
@@ -446,7 +464,8 @@
         sendBgMessage({
           type: 'CONTROL_DANMAKU',
           action: 'SEEK_RATIO',
-          ratio: peak.bucketIdx / (bucketsCount - 1)
+          ratio: peak.bucketIdx / (bucketsCount - 1),
+          autoPlay: true
         }).then((res) => {
           if (res?.ok && res.state) applyState(res.state);
         });
@@ -484,10 +503,7 @@
       maxBatchSelect.value = String(normalizeMaxBatchCount(state.maxBatchCount));
     }
     if (state.speedMsPerSec) {
-      const exists = Array.from(speedSelect.options).some(
-        (opt) => parseInt(opt.value, 10) === state.speedMsPerSec
-      );
-      if (exists) speedSelect.value = String(state.speedMsPerSec);
+      speedSelect.value = String(normalizeReplaySpeed(state.speedMsPerSec));
     }
 
     if (typeof state.board === 'string' && state.board) {
@@ -502,28 +518,33 @@
     if (typeof state.articleTitle === 'string') currentArticleTitle = state.articleTitle;
     if (typeof state.articleUrl === 'string') currentArticleUrl = state.articleUrl;
     if (typeof state.lastFetchedAt === 'number' && state.lastFetchedAt > 0) lastFetchedAt = state.lastFetchedAt;
+    if (typeof state.lastFailedAt === 'number') lastFailedAt = state.lastFailedAt;
+    if (typeof state.lastError === 'string') lastError = state.lastError;
     if (state.lastDebugInfo) lastDebugInfo = state.lastDebugInfo;
 
+    // 背景在推文無變動時只送輕量狀態（不含 pushes），此時沿用既有推文，僅更新時間軸範圍
+    let pushesChanged = false;
     if (Array.isArray(state.pushes)) {
       const prevLen = pushes.length;
       const prevLast = prevLen > 0 ? pushes[prevLen - 1] : null;
       const nextLast = state.pushes.length > 0 ? state.pushes[state.pushes.length - 1] : null;
-      const changed =
+      pushesChanged =
         state.pushes.length !== prevLen ||
         (prevLast?.content !== nextLast?.content) ||
         (prevLast?.timeStr !== nextLast?.timeStr);
-
       pushes = state.pushes;
-      startTime = state.startTime || (pushes[0]?.virtualTime ?? Date.now());
-      const lastPushTime = pushes.length > 0 ? pushes[pushes.length - 1].virtualTime : startTime;
-      const oneHourAhead = Date.now() + 3600000;
-      endTime = state.endTime || Math.max(lastPushTime + 5000, oneHourAhead, startTime + 60000);
-      totalDuration = Math.max(endTime - startTime, 60000);
+    }
+    const prevTotalDuration = totalDuration;
+    startTime = state.startTime || startTime || (pushes[0]?.virtualTime ?? Date.now());
+    const lastPushTime = pushes.length > 0 ? pushes[pushes.length - 1].virtualTime : startTime;
+    endTime = state.endTime || Math.max(lastPushTime + 5000, Date.now() + 3600000, startTime + 60000);
+    totalDuration = Math.max(endTime - startTime, 60000);
 
-      if (changed) {
-        updateSentimentStats();
-        renderHeatmapAndPeaks();
-      }
+    if (pushesChanged) {
+      updateSentimentStats();
+    }
+    if (pushesChanged || totalDuration !== prevTotalDuration) {
+      renderHeatmapAndPeaks();
     }
 
     currentVirtualTime = state.currentVirtualTime ?? startTime;
@@ -596,13 +617,13 @@
 
   document.querySelectorAll('.help-board-chip').forEach((chip) => {
     chip.addEventListener('click', () => {
-      const board = chip.dataset.board || 'Stock';
+      const board = chip.dataset.board || DEFAULT_BOARD;
       cfgBoardInput.value = board;
       boardQueryEdited = true;
       updateInputTooltips(lastDebugInfo?.candidatesPreview);
       cfgQueryInput.focus();
       cfgQueryInput.select();
-      showToast(`✅ 已填入看板 ${board}，可選擇關鍵字或按「立即重抓」`);
+      showToast(`✅ 已填入看板 ${board}，可選擇關鍵字或按「立即抓文」`);
     });
   });
 
@@ -643,7 +664,7 @@
       showToast('⚠️ 套件目前為停用狀態，請先啟用');
       return;
     }
-    const board = cfgBoardInput.value.trim() || 'Stock';
+    const board = cfgBoardInput.value.trim() || DEFAULT_BOARD;
     const query = cfgQueryInput.value.trim();
     boardQueryEdited = false;
 
@@ -670,11 +691,10 @@
       showToast(`❌ 抓取異常：${err.message || err}`);
     } finally {
       btnForceFetch.disabled = false;
-      btnForceFetch.textContent = '🔄 立即重抓';
+      btnForceFetch.textContent = '🔄 立即抓文';
     }
   }
 
-  btnBgFetchStock.addEventListener('click', () => triggerFetch(true));
   btnForceFetch.addEventListener('click', () => triggerFetch(true));
 
   btnPlay.addEventListener('click', () => {
@@ -705,12 +725,24 @@
     }
   });
 
-  btnLive.addEventListener('click', () => {
-    if (!extensionEnabled) return;
-    const nextLive = !isLiveMode;
-    sendBgMessage({ type: 'CONTROL_DANMAKU', action: 'SET_LIVE', enabled: nextLive }).then((res) => {
+  btnModeLive.addEventListener('click', () => {
+    if (!extensionEnabled || isLiveMode) return;
+    sendBgMessage({ type: 'CONTROL_DANMAKU', action: 'SET_LIVE', enabled: true }).then((res) => {
       if (res?.ok && res.state) applyState(res.state);
-      showToast(nextLive ? '📡 Live 追文已開啟' : '⏹ Live 追文已關閉');
+      showToast('📡 已切換至 Live 追文');
+    });
+  });
+
+  // 進入重播：從目前時間軸位置開始播放（位於最新端時自動從頭開始）
+  btnModeReplay.addEventListener('click', () => {
+    if (!extensionEnabled || !isLiveMode) return;
+    if (pushes.length === 0) {
+      showToast('⚠️ 尚無推文可重播');
+      return;
+    }
+    sendBgMessage({ type: 'CONTROL_DANMAKU', action: 'TOGGLE_PLAY' }).then((res) => {
+      if (res?.ok && res.state) applyState(res.state);
+      showToast(`🎞 開始重播（${speedSelect.options[speedSelect.selectedIndex]?.text.replace('⚡ 重播: ', '') || ''}）`);
     });
   });
 
@@ -731,7 +763,7 @@
 
   speedSelect.addEventListener('change', () => {
     if (!extensionEnabled) return;
-    const speedMsPerSec = parseInt(speedSelect.value, 10);
+    const speedMsPerSec = normalizeReplaySpeed(speedSelect.value);
     sendBgMessage({ type: 'CONTROL_DANMAKU', action: 'SET_SPEED', speedMsPerSec }).then((res) => {
       if (res?.ok && res.state) applyState(res.state);
       showToast(`⚡ 歷史重播速度：${speedSelect.options[speedSelect.selectedIndex]?.text || ''}`);
@@ -793,8 +825,11 @@
     if (!extensionEnabled) return;
     const ratio = slider.value / 1000;
     isDragging = false;
-    sendBgMessage({ type: 'CONTROL_DANMAKU', action: 'SEEK_RATIO', ratio }).then((res) => {
+    // 從 Live 拖曳時間軸 = 切到重播並從該處開始播放；已在重播中則維持原本的播放/暫停狀態
+    const wasLive = isLiveMode;
+    sendBgMessage({ type: 'CONTROL_DANMAKU', action: 'SEEK_RATIO', ratio, autoPlay: wasLive || isPlaying }).then((res) => {
       if (res?.ok && res.state) applyState(res.state);
+      if (wasLive) showToast('🎞 已切換至重播模式');
     });
   });
 
@@ -842,43 +877,7 @@
     }
   });
 
-  let popupPollInFlight = false;
-  setInterval(() => {
-    if (
-      !extensionEnabled ||
-      !isLiveMode ||
-      isPlaying ||
-      popupPollInFlight ||
-      lastFetchedAt <= 0
-    ) {
-      return;
-    }
-    const intervalMs = minFetchIntervalSeconds * 1000;
-    if (Date.now() - lastFetchedAt < intervalMs) {
-      return;
-    }
-    popupPollInFlight = true;
-    const isEditing =
-      boardQueryEdited ||
-      document.activeElement === cfgBoardInput ||
-      document.activeElement === cfgQueryInput;
-    sendBgMessage({
-      type: 'BACKGROUND_LOAD_STOCK',
-      board: currentBoardName || 'Stock',
-      query: isEditing ? undefined : cfgQueryInput.value.trim(),
-      enableLive: true,
-      force: false
-    })
-      .then((res) => {
-        if (res?.ok && res.state) {
-          applyState(res.state);
-        }
-      })
-      .catch(() => {})
-      .finally(() => {
-        popupPollInFlight = false;
-      });
-  }, 1000);
+  // 註：控制面板不自行輪詢抓文。背景排程已依「更新間隔」抓取，並透過 DANMAKU_STATE_UPDATED 推播最新狀態。
 
   (async function initPopup() {
     try {

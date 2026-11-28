@@ -121,6 +121,19 @@
     #article-fetched-time {
       color: #90caf9;
     }
+    #article-fetched-time.fetch-error {
+      color: #ff8a80;
+      font-weight: 700;
+      cursor: help;
+    }
+    /* 套件停用時：除電源鈕外的操作區淡化並停用 */
+    body.ext-disabled #board-nav-row,
+    body.ext-disabled .scrubber-wrapper,
+    body.ext-disabled .btn-row,
+    body.ext-disabled .select-grid {
+      opacity: 0.4;
+      pointer-events: none;
+    }
     #article-fetch-interval {
       color: #a5d6a7;
     }
@@ -301,13 +314,8 @@
       color: #69f0ae;
       font-family: monospace;
     }
-    #btn-bg-fetch-stock {
-      background: #00c853;
-      color: #000;
-      font-weight: 700;
-      border-color: #00e676;
-    }
     #btn-force-fetch {
+      white-space: nowrap;
       background: #1565c0;
       color: #fff;
       font-weight: 600;
@@ -450,11 +458,40 @@
       color: #bdbdbd;
       border-color: #616161;
     }
-    button.live-active {
+    .mode-switch {
+      display: inline-flex;
+      border: 1px solid #555;
+      border-radius: 5px;
+      overflow: hidden;
+    }
+    .mode-switch .mode-btn {
+      border: none;
+      border-radius: 0;
+      background: #282832;
+      color: #bdbdbd;
+    }
+    .mode-switch .mode-btn + .mode-btn {
+      border-left: 1px solid #555;
+    }
+    .mode-switch #btn-mode-live.selected {
       background: #d50000;
       color: #fff;
       font-weight: 700;
-      border-color: #ff5252;
+    }
+    .mode-switch #btn-mode-replay.selected {
+      background: #6a1b9a;
+      color: #fff;
+      font-weight: 700;
+    }
+    .mode-switch .mode-btn.selected {
+      cursor: default;
+    }
+    .hidden {
+      display: none !important;
+    }
+    select:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
     }
     #btn-recent-5m {
       background: #0277bd;
@@ -588,8 +625,7 @@
       title="輸入想鎖定的文章標題關鍵字（按 Enter 可直接抓文）&#10;• 填寫關鍵字（如：閒聊、LIVE、盤中、炸裂）：自動鎖定該板最新符合標題的文章&#10;• 留空不填：直接抓取該看板最新發表的一篇文章"
     >
     <button type="button" id="btn-board-help" class="info-help-btn" title="移入或點擊查看看板/文章監控說明、常用板名與最新候選文章">ⓘ</button>
-    <button id="btn-bg-fetch-stock" title="在背景抓取看板文章推文">📥 背景抓文</button>
-    <button id="btn-force-fetch" title="忽略冷卻時間，立即重新抓取最新文章與推文">🔄 立即重抓</button>
+    <button id="btn-force-fetch" title="鎖定上方看板 / 關鍵字，忽略更新間隔立即重新抓取最新文章與推文（在輸入框按 Enter 效果相同）">🔄 立即抓文</button>
 
     <div id="board-help-popover" role="dialog" aria-label="看板與文章監控說明">
       <div class="help-popover-header">
@@ -636,49 +672,23 @@
   </div>
 
   <div class="btn-row">
-    <button id="btn-play">▶ 播放</button>
-    <button id="btn-recent-5m" title="清空目前排隊中的舊彈幕，立即從最近 5 分鐘內的推文開始播放並維持 Live 追文">⏩ 近5分</button>
-    <button id="btn-live" class="live-active">📡 Live 追文: 開</button>
-    <button id="btn-cross-tab" class="active">🌐 跨分頁彈幕: 開</button>
-    <button id="btn-boo-only">🔥 只看噓文</button>
+    <div class="mode-switch" role="group" aria-label="播放模式">
+      <button type="button" id="btn-mode-live" class="mode-btn" title="Live 追文：即時顯示最新推文彈幕">📡 Live</button>
+      <button type="button" id="btn-mode-replay" class="mode-btn" title="重播：依時間軸重播整篇推文（可拖曳時間軸或點擊🔥尖峰跳轉）">🎞 重播</button>
+    </div>
+    <!-- Live 模式顯示「近5分」；重播模式顯示「播放/暫停」 -->
+    <button id="btn-recent-5m" title="清空目前排隊中的舊彈幕，立即播放最近 5 分鐘內的推文並繼續 Live 追文">⏩ 近5分</button>
+    <button id="btn-play" title="播放 / 暫停重播（網頁上可按空白鍵）">▶ 播放</button>
+    <button id="btn-cross-tab" class="active" title="開啟後，在 PTT 以外的網頁（YouTube、新聞…）也顯示彈幕">🌐 跨分頁: 開</button>
+    <button id="btn-boo-only" title="只顯示噓文彈幕">🔥 只看噓文</button>
   </div>
 
+  <!-- 選項由 popup.js 依 config.js 產生 -->
   <div class="select-grid">
-    <select id="speed-select" title="歷史重播倍速">
-      <option value="15000">⚡ 重播: 15x 速</option>
-      <option value="30000">⚡ 重播: 30x 速</option>
-      <option value="60000" selected>⚡ 重播: 60x 速</option>
-      <option value="120000">⚡ 重播: 120x 速</option>
-      <option value="180000">⚡ 重播: 180x 速</option>
-      <option value="300000">⚡ 重播: 300x 速</option>
-    </select>
-    <select id="fly-duration-select" title="設定彈幕飛越畫面的速度（秒數越長飛越慢）">
-      <option value="18">🐢 飛速: 極慢 (18s)</option>
-      <option value="14">🐢 飛速: 慢速 (14s)</option>
-      <option value="10" selected>🚀 飛速: 適中 (10s)</option>
-      <option value="7">🚀 飛速: 快速 (7s)</option>
-      <option value="5">⚡ 飛速: 極快 (5s)</option>
-    </select>
-    <select id="min-interval-select" title="設定背景最小抓取間隔時間（秒）">
-      <option value="3">⏳ 間隔: 3s</option>
-      <option value="5">⏳ 間隔: 5s</option>
-      <option value="10">⏳ 間隔: 10s</option>
-      <option value="15">⏳ 間隔: 15s</option>
-      <option value="30" selected>⏳ 間隔: 30s</option>
-      <option value="60">⏳ 間隔: 60s</option>
-      <option value="120">⏳ 間隔: 120s</option>
-      <option value="180">⏳ 間隔: 180s</option>
-      <option value="300">⏳ 間隔: 300s</option>
-    </select>
-    <select id="max-batch-select" title="設定每波最多發射幾則彈幕">
-      <option value="3">💬 每次最多: 3則</option>
-      <option value="5">💬 每次最多: 5則</option>
-      <option value="10" selected>💬 每次最多: 10則</option>
-      <option value="15">💬 每次最多: 15則</option>
-      <option value="20">💬 每次最多: 20則</option>
-      <option value="30">💬 每次最多: 30則</option>
-      <option value="50">💬 每次最多: 50則</option>
-    </select>
+    <select id="speed-select" title="重播倍速（僅重播模式可調整）"></select>
+    <select id="fly-duration-select" title="設定彈幕飛越畫面的速度（秒數越長飛越慢）"></select>
+    <select id="min-interval-select" title="Live 推文更新間隔：背景隨時監聽 PTT 新推文通知，每隔此秒數批次抓取並發射一次彈幕。&#10;越短越即時（沒人推文時不會產生額外請求）；越長則累積成一波再播放。&#10;抓取失敗時至少間隔 5 秒才重試。"></select>
+    <select id="max-batch-select" title="設定每波最多發射幾則彈幕"></select>
   </div>
 
   <div class="btn-row">
@@ -704,6 +714,7 @@
     <div id="time-display">就緒</div>
   </div>
 
+  <script src="config.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

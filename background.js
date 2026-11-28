@@ -1,22 +1,37 @@
 // background.js - 支援 PTT 官方 longpoll + poll 增量即時推文抓取、跨頁找文、防舊快照覆蓋與 MV3 保活
-const DEFAULT_BOARD = 'Stock';
-const DEFAULT_QUERY = '閒聊';
+importScripts('config.js');
+const CFG = self.PTT_DANMAKU_CONFIG;
+const normalizeOption = self.pttDanmakuNormalizeOption;
+
+const DEFAULT_BOARD = CFG.DEFAULT_BOARD;
+const DEFAULT_QUERY = CFG.DEFAULT_QUERY;
 const BOARD_POLL_INTERVAL_MS = 20000;
-const LIVE_PUSH_POLL_INTERVAL_MS = 5000;
-const DEFAULT_MIN_FETCH_INTERVAL_MS = 30000;
-const DEFAULT_FLY_DURATION_MS = 10000;
-const DEFAULT_MAX_BATCH_COUNT = 10;
-const INITIAL_PREVIEW_WINDOW_MINUTES = 5;
-const INITIAL_PREVIEW_MAX_WAVES = 3;
-const FETCH_TIMEOUT_MS = 8000;
-const ALLOWED_MIN_FETCH_SECONDS = new Set([3, 5, 10, 15, 30, 60, 120, 180, 300]);
-const ALLOWED_FLY_DURATION_SECONDS = new Set([5, 7, 10, 14, 18]);
-const ALLOWED_MAX_BATCH_COUNTS = new Set([3, 5, 10, 15, 20, 30, 50]);
+const DEFAULT_MIN_FETCH_INTERVAL_MS = CFG.MIN_FETCH_INTERVAL_SECONDS.defaultValue * 1000;
+const DEFAULT_FLY_DURATION_MS = CFG.FLY_DURATION_SECONDS.defaultValue * 1000;
+const DEFAULT_MAX_BATCH_COUNT = CFG.MAX_BATCH_COUNT.defaultValue;
+const DEFAULT_REPLAY_SPEED_MS_PER_SEC = CFG.REPLAY_SPEED_MS_PER_SEC.defaultValue;
+const INITIAL_PREVIEW_WINDOW_MINUTES = CFG.INITIAL_PREVIEW_WINDOW_MINUTES;
+const INITIAL_PREVIEW_MAX_WAVES = CFG.INITIAL_PREVIEW_MAX_WAVES;
+// 逾時涵蓋「收到 header + 讀完 body」全程（文章 HTML 可達數百 KB，故放寬至 15s）
+const FETCH_TIMEOUT_MS = 15000;
+// PTT /v1/longpoll 為「等待下一次變動」的長輪詢：需常駐一條連線並帶 If-Modified-Since / If-None-Match，
+// 否則每 N 秒短暫詢問一次會因伺服器掛住連線而誤判為「無新推文」，導致推文卡住不更新
+const LONGPOLL_WATCH_TIMEOUT_MS = 25000;
+const LONGPOLL_WATCH_RETRY_MS = 1000;
+const LONGPOLL_WATCH_DUP_DELAY_MS = 3000;
+const LONGPOLL_WATCH_ERROR_BACKOFF_MS = 5000;
+const LONGPOLL_WATCH_HEALTHY_WINDOW_MS = 60000;
+const LONGPOLL_WATCH_RETRYABLE_STATUS = new Set([304, 408, 502, 503, 504, 520, 522, 524]);
+// 保底：若超過此時間既沒收到 longpoll 變動通知、也沒做過完整抓取，則強制完整重抓一次
+const FULL_RELOAD_SAFETY_MS = 180000;
+// 抓取失敗後至少等待此時間（或使用者設定的更新間隔，取較長者）才重試，避免 PTT 當機時每秒狂打
+const FETCH_FAILURE_MIN_RETRY_MS = 5000;
 
 const STORAGE_ENABLED_KEY = 'ptt_danmaku_extension_enabled';
 const STORAGE_MIN_INTERVAL_KEY = 'ptt_danmaku_min_fetch_interval_ms';
 const STORAGE_FLY_DURATION_KEY = 'ptt_danmaku_fly_duration_ms';
 const STORAGE_MAX_BATCH_KEY = 'ptt_danmaku_max_batch_count';
+const STORAGE_REPLAY_SPEED_KEY = 'ptt_danmaku_replay_speed_ms_per_sec';
 const STORAGE_FILTER_OPTIONS_KEY = 'ptt_danmaku_filter_options';
 const STORAGE_SESSION_META_KEY = 'ptt_danmaku_session_meta';
 const STORAGE_RUNTIME_CACHE_KEY = 'ptt_danmaku_runtime_cache';
@@ -31,7 +46,7 @@ let sharedState = {
   nextPushIndex: 0,
   isPlaying: false,
   isLiveMode: true,
-  speedMsPerSec: 60000,
+  speedMsPerSec: DEFAULT_REPLAY_SPEED_MS_PER_SEC,
   minFetchIntervalMs: DEFAULT_MIN_FETCH_INTERVAL_MS,
   flyDurationMs: DEFAULT_FLY_DURATION_MS,
   maxBatchCount: DEFAULT_MAX_BATCH_COUNT,
@@ -45,6 +60,7 @@ let sharedState = {
   query: DEFAULT_QUERY,
   articleEpoch: 0,
   lastFetchedAt: 0,
+  lastFailedAt: 0,
   lastError: '',
   lastDebugInfo: null,
   lastUpdatedAt: Date.now()
@@ -83,7 +99,8 @@ function resetPollingSession(articleUrl = '') {
     baseRawDivCount: 0,
     deltaTotalCount: 0,
     lastDeltaAddedCount: 0,
-    pollMode: 'init'
+    pollMode: 'init',
+    lastFullLoadAt: 0
   };
 }
 
@@ -118,32 +135,28 @@ function saveSessionMetaToStorage() {
   } catch (_) { }
 }
 
-function sanitizeMinFetchIntervalMs(rawMsOrSec, isSeconds = false) {
+// 可選值統一由 config.js 定義；以下將秒/毫秒輸入正規化為允許值（不合法時回傳預設值）
+function sanitizeSecondsOptionMs(spec, rawMsOrSec, isSeconds) {
   const num = Number(rawMsOrSec);
-  if (!Number.isFinite(num) || num <= 0) return DEFAULT_MIN_FETCH_INTERVAL_MS;
+  if (!Number.isFinite(num) || num <= 0) return spec.defaultValue * 1000;
   const sec = isSeconds ? Math.round(num) : Math.round(num / 1000);
-  if (ALLOWED_MIN_FETCH_SECONDS.has(sec)) {
-    return sec * 1000;
-  }
-  return DEFAULT_MIN_FETCH_INTERVAL_MS;
+  return normalizeOption(spec, sec) * 1000;
+}
+
+function sanitizeMinFetchIntervalMs(rawMsOrSec, isSeconds = false) {
+  return sanitizeSecondsOptionMs(CFG.MIN_FETCH_INTERVAL_SECONDS, rawMsOrSec, isSeconds);
 }
 
 function sanitizeFlyDurationMs(rawMsOrSec, isSeconds = false) {
-  const num = Number(rawMsOrSec);
-  if (!Number.isFinite(num) || num <= 0) return DEFAULT_FLY_DURATION_MS;
-  const sec = isSeconds ? Math.round(num) : Math.round(num / 1000);
-  if (ALLOWED_FLY_DURATION_SECONDS.has(sec)) {
-    return sec * 1000;
-  }
-  return DEFAULT_FLY_DURATION_MS;
+  return sanitizeSecondsOptionMs(CFG.FLY_DURATION_SECONDS, rawMsOrSec, isSeconds);
 }
 
 function sanitizeMaxBatchCount(rawVal) {
-  const num = Math.round(Number(rawVal));
-  if (ALLOWED_MAX_BATCH_COUNTS.has(num)) {
-    return num;
-  }
-  return DEFAULT_MAX_BATCH_COUNT;
+  return normalizeOption(CFG.MAX_BATCH_COUNT, rawVal);
+}
+
+function sanitizeReplaySpeed(rawVal) {
+  return normalizeOption(CFG.REPLAY_SPEED_MS_PER_SEC, rawVal);
 }
 
 function selectInitialPreviewPushes(allPushes, rawMaxBatchCount) {
@@ -222,9 +235,30 @@ function findNextIndexByTime(pushes, targetTime) {
   return ans;
 }
 
-function getSnapshot() {
+// 距離下一次允許抓取還需等待的毫秒數：成功後依「更新間隔」，失敗後依 max(更新間隔, 5s)
+function getFetchCooldownRemainingMs(slackMs = 0) {
+  const minInterval = sanitizeMinFetchIntervalMs(sharedState.minFetchIntervalMs, false);
+  const now = Date.now();
+  let remainMs = 0;
+  if (sharedState.lastFetchedAt > 0) {
+    remainMs = Math.max(remainMs, minInterval - (now - sharedState.lastFetchedAt));
+  }
+  if (sharedState.lastFailedAt > 0) {
+    const retryMs = Math.max(minInterval, FETCH_FAILURE_MIN_RETRY_MS);
+    remainMs = Math.max(remainMs, retryMs - (now - sharedState.lastFailedAt));
+  }
+  return Math.max(0, remainMs - slackMs);
+}
+
+// includePushes=false 時回傳不含推文陣列的輕量狀態（推文未變動時使用，避免每次輪詢都把上千則推文廣播給所有分頁）
+function getSnapshot({ includePushes = true } = {}) {
+  if (!includePushes) {
+    const { pushes, ...rest } = sharedState;
+    return { ...rest, pushCount: pushes.length };
+  }
   return {
     ...sharedState,
+    pushCount: sharedState.pushes.length,
     pushes: sharedState.pushes.map((p) => ({
       index: p.index,
       floor: p.floor,
@@ -532,70 +566,71 @@ function withCacheBust(rawUrl) {
   return u.href;
 }
 
-async function fetchWithTimeout(url, options = {}, timeoutMs = FETCH_TIMEOUT_MS) {
+// readBody(resp) 會在同一個逾時/AbortController 範圍內執行，避免 header 已回但 body 卡住時永久掛起
+async function fetchWithTimeout(url, options = {}, timeoutMs = FETCH_TIMEOUT_MS, readBody = null) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, {
+    const resp = await fetch(url, {
       ...options,
       signal: controller.signal
     });
+    return readBody ? await readBody(resp) : resp;
   } finally {
     clearTimeout(timer);
   }
 }
 
-async function fetchPttHtml(url) {
-  const targetUrl = withCacheBust(url);
-  let resp = await fetchWithTimeout(targetUrl, {
-    cache: 'no-store',
-    credentials: 'include',
-    headers: {
-      'Cache-Control': 'no-cache, no-store, must-revalidate',
-      Pragma: 'no-cache'
-    }
-  });
-
-  if (!resp.ok) {
-    throw new Error(`HTTP ${resp.status} (${url})`);
+const NO_STORE_HTML_OPTIONS = {
+  cache: 'no-store',
+  credentials: 'include',
+  headers: {
+    'Cache-Control': 'no-cache, no-store, must-revalidate',
+    Pragma: 'no-cache'
   }
+};
 
-  let html = await resp.text();
+async function fetchPttHtml(url) {
+  let html = await fetchWithTimeout(withCacheBust(url), NO_STORE_HTML_OPTIONS, FETCH_TIMEOUT_MS, async (resp) => {
+    if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status} (${url})`);
+    }
+    return await resp.text();
+  });
 
   if (html.includes('/ask/over18') || html.includes('name="yes"')) {
     const body = new URLSearchParams({
       from: new URL(url, 'https://www.ptt.cc').pathname,
       yes: 'yes'
     });
-    await fetchWithTimeout('https://www.ptt.cc/ask/over18', {
-      method: 'POST',
-      cache: 'no-store',
-      credentials: 'include',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded'
+    await fetchWithTimeout(
+      'https://www.ptt.cc/ask/over18',
+      {
+        method: 'POST',
+        cache: 'no-store',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: body.toString()
       },
-      body: body.toString()
-    });
+      FETCH_TIMEOUT_MS,
+      (resp) => resp.text().catch(() => '')
+    );
 
-    resp = await fetchWithTimeout(withCacheBust(url), {
-      cache: 'no-store',
-      credentials: 'include',
-      headers: {
-        'Cache-Control': 'no-cache, no-store, must-revalidate',
-        Pragma: 'no-cache'
+    html = await fetchWithTimeout(withCacheBust(url), NO_STORE_HTML_OPTIONS, FETCH_TIMEOUT_MS, async (resp) => {
+      if (!resp.ok) {
+        throw new Error(`Over18 重試失敗 HTTP ${resp.status}`);
       }
+      return await resp.text();
     });
-    if (!resp.ok) {
-      throw new Error(`Over18 重試失敗 HTTP ${resp.status}`);
-    }
-    html = await resp.text();
   }
 
   return html;
 }
 
 async function fetchPttJson(url, timeoutMs = 6000) {
-  const resp = await fetchWithTimeout(
+  return await fetchWithTimeout(
     url,
     {
       cache: 'no-store',
@@ -605,12 +640,151 @@ async function fetchPttJson(url, timeoutMs = 6000) {
         'X-Requested-With': 'XMLHttpRequest'
       }
     },
-    timeoutMs
+    timeoutMs,
+    async (resp) => {
+      if (!resp.ok) {
+        throw new Error(`JSON HTTP ${resp.status} (${url})`);
+      }
+      return await resp.json();
+    }
   );
-  if (!resp.ok) {
-    throw new Error(`JSON HTTP ${resp.status} (${url})`);
+}
+
+// ================= 常駐 longpoll 監聽器 =================
+// 模擬 PTT 網頁版行為：永遠掛著一條 /v1/longpoll 連線，伺服器有新推文時立即回傳最新 size/sig，
+// 收到後馬上帶 If-Modified-Since / If-None-Match 重新掛上，等待下一次變動。
+// 實際的增量抓取仍由排程依「最小抓取間隔」執行，並直接使用這裡記錄的最新 size/sig，因此不會再漏抓。
+let longPollWatcher = {
+  generation: 0,
+  url: '',
+  running: false,
+  lastModified: '',
+  etag: '',
+  latest: null,
+  lastHealthyAt: 0,
+  lastChangeAt: 0
+};
+
+function stopLongPollWatcher() {
+  longPollWatcher.generation++;
+  longPollWatcher.running = false;
+  longPollWatcher.url = '';
+  longPollWatcher.latest = null;
+  longPollWatcher.lastHealthyAt = 0;
+  longPollWatcher.lastChangeAt = 0;
+}
+
+function ensureLongPollWatcher() {
+  const url = sharedState.enabled ? pollingSession.longPollUrl || '' : '';
+  if (!url) {
+    if (longPollWatcher.running || longPollWatcher.url) stopLongPollWatcher();
+    return;
   }
-  return await resp.json();
+  if (longPollWatcher.running && longPollWatcher.url === url) return;
+
+  stopLongPollWatcher();
+  const gen = longPollWatcher.generation;
+  longPollWatcher.url = url;
+  longPollWatcher.running = true;
+  longPollWatcher.lastModified = '';
+  longPollWatcher.etag = '';
+
+  runLongPollWatcher(gen, url)
+    .catch((err) => console.warn('[PTT 彈幕診斷] longpoll 監聽器異常結束:', err?.message || err))
+    .finally(() => {
+      if (gen === longPollWatcher.generation) {
+        longPollWatcher.running = false;
+      }
+    });
+}
+
+async function runLongPollWatcher(gen, url) {
+  const isCurrent = () => gen === longPollWatcher.generation;
+
+  while (isCurrent() && sharedState.enabled) {
+    const headers = {
+      Accept: 'application/json, text/javascript, */*; q=0.01',
+      'X-Requested-With': 'XMLHttpRequest'
+    };
+    if (longPollWatcher.lastModified) headers['If-Modified-Since'] = longPollWatcher.lastModified;
+    if (longPollWatcher.etag) headers['If-None-Match'] = longPollWatcher.etag;
+
+    let delayMs = 0;
+    try {
+      // 不可附加 _cb query 參數（同 fetchArticleDeltaPushes 說明）
+      const result = await fetchWithTimeout(
+        url,
+        { cache: 'no-store', credentials: 'include', headers },
+        LONGPOLL_WATCH_TIMEOUT_MS,
+        async (resp) => ({
+          status: resp.status,
+          lastModified: resp.headers.get('last-modified') || '',
+          etag: resp.headers.get('etag') || '',
+          data: resp.ok ? await resp.json().catch(() => null) : null
+        })
+      );
+      if (!isCurrent()) return;
+
+      const now = Date.now();
+      const data = result.data;
+      if (result.status === 200 && data && typeof data.size === 'number' && data.sig) {
+        const prev = longPollWatcher.latest;
+        const isDuplicate = Boolean(prev && prev.size === data.size && prev.sig === data.sig);
+        longPollWatcher.lastModified = result.lastModified;
+        longPollWatcher.etag = result.etag;
+        longPollWatcher.latest = {
+          size: data.size,
+          sig: data.sig,
+          cacheKey: data.cacheKey || '',
+          receivedAt: now
+        };
+        longPollWatcher.lastHealthyAt = now;
+        if (isDuplicate) {
+          // 伺服器沒給 Last-Modified 時可能重複回傳快取結果，稍候再掛避免空轉
+          delayMs = LONGPOLL_WATCH_DUP_DELAY_MS;
+        } else {
+          longPollWatcher.lastChangeAt = now;
+        }
+      } else if (LONGPOLL_WATCH_RETRYABLE_STATUS.has(result.status)) {
+        // 304 / Cloudflare 522 等：代表這段時間沒有新變動，立即重新掛上
+        longPollWatcher.lastHealthyAt = now;
+        delayMs = LONGPOLL_WATCH_RETRY_MS;
+      } else {
+        // 例如 400「Message ID invalid」：條件標頭失效，重置後重新訂閱
+        console.warn('[PTT 彈幕診斷] longpoll 監聽回應異常:', result.status);
+        longPollWatcher.lastModified = '';
+        longPollWatcher.etag = '';
+        delayMs = LONGPOLL_WATCH_ERROR_BACKOFF_MS;
+      }
+    } catch (err) {
+      if (!isCurrent()) return;
+      const msg = String(err?.message || err || '');
+      if (err?.name === 'AbortError' || /abort|timeout/i.test(msg)) {
+        // 等滿逾時仍無變動 = 正常的「沒有新推文」，立即重新掛上
+        longPollWatcher.lastHealthyAt = Date.now();
+      } else {
+        delayMs = LONGPOLL_WATCH_ERROR_BACKOFF_MS;
+      }
+    }
+
+    if (delayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+}
+
+// 回傳監聽器掌握的最新 longpoll 資料；null = 監聽器不可用（需退回直接詢問），
+// 'NO_CHANGE' = 監聽器運作正常但尚未收到任何變動
+function getWatcherLpData(session) {
+  if (!longPollWatcher.running || longPollWatcher.url !== session.longPollUrl) return null;
+  if (longPollWatcher.latest) return longPollWatcher.latest;
+  if (Date.now() - longPollWatcher.lastHealthyAt < LONGPOLL_WATCH_HEALTHY_WINDOW_MS) return 'NO_CHANGE';
+  return null;
+}
+
+function isFullReloadDue() {
+  const lastSignalAt = Math.max(pollingSession.lastFullLoadAt || 0, longPollWatcher.lastChangeAt || 0);
+  return Date.now() - lastSignalAt >= FULL_RELOAD_SAFETY_MS;
 }
 
 function buildRefollowPollUrl(basePollUrl, lpData) {
@@ -638,16 +812,22 @@ async function fetchArticleDeltaPushes(session) {
     return { ok: false, deltaPushes: [], rawDivCount: 0 };
   }
 
-  let lpData;
-  try {
-    // 不可附加 _cb query 參數，否則會繞過 PTT nginx 快取並觸發長連線掛起
-    lpData = await fetchPttJson(session.longPollUrl, 4500);
-  } catch (err) {
-    const msg = String(err?.message || err || '');
-    if (err?.name === 'AbortError' || /abort|timeout/i.test(msg)) {
-      return { ok: true, deltaPushes: [], rawDivCount: 0, timeoutNoChange: true };
+  let lpData = getWatcherLpData(session);
+  if (lpData === 'NO_CHANGE') {
+    return { ok: true, deltaPushes: [], rawDivCount: 0, watcherNoChange: true };
+  }
+  if (!lpData) {
+    // 監聽器尚未就緒：退回直接詢問一次（僅在最近剛有變動、伺服器仍有快取時會立即回應）
+    try {
+      // 不可附加 _cb query 參數，否則會繞過 PTT nginx 快取並觸發長連線掛起
+      lpData = await fetchPttJson(session.longPollUrl, 4500);
+    } catch (err) {
+      const msg = String(err?.message || err || '');
+      if (err?.name === 'AbortError' || /abort|timeout/i.test(msg)) {
+        return { ok: true, deltaPushes: [], rawDivCount: 0, timeoutNoChange: true };
+      }
+      throw err;
     }
-    throw err;
   }
 
   if (!lpData || typeof lpData.size !== 'number' || !lpData.sig) {
@@ -878,6 +1058,7 @@ function finalizeArticleStateAndBroadcast({
   sharedState.board = meta.board || sharedState.board || DEFAULT_BOARD;
   sharedState.articleEpoch = epoch;
   sharedState.lastFetchedAt = Date.now();
+  sharedState.lastFailedAt = 0;
   sharedState.lastError = '';
   sharedState.lastDebugInfo = debugPayload;
 
@@ -891,8 +1072,14 @@ function finalizeArticleStateAndBroadcast({
   }
 
   sharedState.lastUpdatedAt = Date.now();
-  saveSessionMetaToStorage();
-  const snapshot = getSnapshot();
+  // 同篇文章且推文無變動（例如短間隔輪詢但沒人推文）：略過大量推文的儲存與廣播，只同步輕量狀態
+  const pushesUnchanged =
+    isSameArticle && !meta.force && newlyAddedPushes.length === 0 && pushes.length === prevLen;
+  if (!pushesUnchanged) {
+    saveSessionMetaToStorage();
+  }
+  ensureLongPollWatcher();
+  const snapshot = getSnapshot({ includePushes: !pushesUnchanged });
   const nowMinuteFloor = Math.floor(Date.now() / 60000) * 60000;
   const cutoffTs = nowMinuteFloor - INITIAL_PREVIEW_WINDOW_MINUTES * 60000;
   const hasStaleCatchup =
@@ -959,7 +1146,8 @@ async function loadArticleIntoBackground(articleUrl, meta = {}) {
     pollingSession.articleUrl === articleUrl &&
     pollingSession.pollUrl &&
     pollingSession.longPollUrl &&
-    sharedState.pushes.length > 0
+    sharedState.pushes.length > 0 &&
+    !isFullReloadDue()
   ) {
     try {
       const deltaRes = await fetchArticleDeltaPushes(pollingSession);
@@ -1038,6 +1226,7 @@ async function loadArticleIntoBackground(articleUrl, meta = {}) {
   } else {
     resetPollingSession(articleUrl);
   }
+  pollingSession.lastFullLoadAt = Date.now();
 
   // 處理同篇文章合併（支援 PTT「檔案過大！部分文章無法顯示」滑動視窗截斷下的新推文偵測與保留）
   let newlyAddedPushes = [];
@@ -1101,23 +1290,15 @@ async function backgroundFetchStockArticle({
     return inflightFetchPromise;
   }
 
-  const minInterval = sanitizeMinFetchIntervalMs(sharedState.minFetchIntervalMs, false);
-  const now = Date.now();
-  const elapsedSinceLastFetch = now - (sharedState.lastFetchedAt || 0);
-  if (
-    !force &&
-    !boardChanged &&
-    !queryChanged &&
-    sharedState.lastFetchedAt > 0 &&
-    elapsedSinceLastFetch + (isScheduledPoll ? 350 : 0) < minInterval
-  ) {
+  const cooldownMs = getFetchCooldownRemainingMs(isScheduledPoll ? 350 : 0);
+  if (!force && !boardChanged && !queryChanged && cooldownMs > 0) {
     return {
       ok: true,
-      state: getSnapshot(),
+      state: getSnapshot({ includePushes: false }),
       addedCount: 0,
       newlyAddedPushes: [],
       throttled: true,
-      retryAfterMs: minInterval - elapsedSinceLastFetch,
+      retryAfterMs: cooldownMs,
       debugInfo: sharedState.lastDebugInfo
     };
   }
@@ -1160,7 +1341,10 @@ async function backgroundFetchStockArticle({
       return await loadArticleIntoBackground(targetUrl, targetMeta);
     } catch (err) {
       sharedState.lastError = err.message || String(err);
+      sharedState.lastFailedAt = Date.now();
       console.warn('[PTT 彈幕診斷] 抓文失敗:', sharedState.lastError);
+      // 通知控制面板/分頁顯示錯誤狀態
+      broadcastToAllTabs({ type: 'DANMAKU_STATE_UPDATED', state: getSnapshot({ includePushes: false }) });
       throw err;
     } finally {
       if (inflightFetchKey === requestKey) {
@@ -1194,7 +1378,7 @@ async function setMinFetchIntervalSeconds(seconds) {
     sharedState.enabled &&
     sharedState.isLiveMode &&
     !sharedState.isPlaying &&
-    Date.now() - (sharedState.lastFetchedAt || 0) >= nextMs
+    getFetchCooldownRemainingMs() === 0
   ) {
     backgroundFetchStockArticle({
       board: sharedState.board || DEFAULT_BOARD,
@@ -1371,11 +1555,12 @@ setInterval(() => {
 
 // 動態背景追文排程：依使用者設定的 minFetchIntervalMs（3s~300s）自動抓最新增量推文
 setInterval(() => {
+  // 確保 longpoll 監聽器隨目前文章常駐（停用、換篇或 SW 重啟後自動切換/恢復）
+  ensureLongPollWatcher();
   if (!sharedState.enabled || inflightFetchPromise) return;
   if (!sharedState.isLiveMode && sharedState.isPlaying) return;
 
-  const minInterval = sanitizeMinFetchIntervalMs(sharedState.minFetchIntervalMs, false);
-  if (sharedState.lastFetchedAt > 0 && Date.now() - sharedState.lastFetchedAt < minInterval) {
+  if (getFetchCooldownRemainingMs() > 0) {
     return;
   }
 
@@ -1716,24 +1901,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     } else if (action === 'SET_PLAYING') {
       sharedState.isPlaying = Boolean(message.isPlaying);
     } else if (action === 'SET_SPEED') {
-      const val = parseInt(message.speedMsPerSec, 10);
-      if (Number.isFinite(val) && val > 0) {
-        sharedState.speedMsPerSec = val;
-      }
-      if (sharedState.isLiveMode) {
-        sharedState.isLiveMode = false;
-      }
-      if (!sharedState.isPlaying && sharedState.pushes.length > 0) {
-        if (sharedState.currentVirtualTime >= sharedState.endTime) {
-          sharedState.currentVirtualTime = sharedState.startTime;
-          sharedState.nextPushIndex = 0;
-        }
-        sharedState.isPlaying = true;
-      }
+      // 只調整重播倍速並保存，不切換模式（倍速選單僅在重播模式可操作）
+      sharedState.speedMsPerSec = sanitizeReplaySpeed(message.speedMsPerSec);
+      chrome.storage.local.set({ [STORAGE_REPLAY_SPEED_KEY]: sharedState.speedMsPerSec }).catch(() => { });
     } else if (action === 'SEEK_RATIO') {
+      // 拖曳時間軸 / 點擊尖峰 = 進入重播模式並跳到該時間點；autoPlay 時直接開始播放
       const ratio = Math.min(1, Math.max(0, Number(message.ratio) || 0));
+      sharedState.isLiveMode = false;
       sharedState.currentVirtualTime = sharedState.startTime + ratio * sharedState.totalDuration;
       sharedState.nextPushIndex = findNextIndexByTime(sharedState.pushes, sharedState.currentVirtualTime);
+      if (message.autoPlay && sharedState.pushes.length > 0) {
+        sharedState.isPlaying = true;
+      }
       clearStage = true;
     } else if (action === 'JUMP_MINUTES') {
       const deltaMinutes = Number(message.deltaMinutes) || 0;
@@ -1787,6 +1966,7 @@ bootstrapPromise = (async function restoreRuntimeStorage() {
       STORAGE_MIN_INTERVAL_KEY,
       STORAGE_FLY_DURATION_KEY,
       STORAGE_MAX_BATCH_KEY,
+      STORAGE_REPLAY_SPEED_KEY,
       STORAGE_FILTER_OPTIONS_KEY,
       STORAGE_SESSION_META_KEY,
       STORAGE_RUNTIME_CACHE_KEY
@@ -1802,6 +1982,9 @@ bootstrapPromise = (async function restoreRuntimeStorage() {
     }
     if (saved[STORAGE_MAX_BATCH_KEY] !== undefined) {
       sharedState.maxBatchCount = sanitizeMaxBatchCount(saved[STORAGE_MAX_BATCH_KEY]);
+    }
+    if (saved[STORAGE_REPLAY_SPEED_KEY] !== undefined) {
+      sharedState.speedMsPerSec = sanitizeReplaySpeed(saved[STORAGE_REPLAY_SPEED_KEY]);
     }
     const filterOpts = saved[STORAGE_FILTER_OPTIONS_KEY];
     if (filterOpts && typeof filterOpts === 'object') {
@@ -1872,6 +2055,9 @@ bootstrapPromise = (async function restoreRuntimeStorage() {
 (async function bootstrap() {
   await bootstrapPromise;
 
+  // 從儲存還原的輪詢 Session 立即掛上 longpoll 監聽
+  ensureLongPollWatcher();
+
   // 啟動或從休眠恢復時，若為啟用狀態則預設開啟 Live 追文並立即抓文
   if (sharedState.enabled && sharedState.isLiveMode) {
     backgroundFetchStockArticle({
@@ -1882,8 +2068,11 @@ bootstrapPromise = (async function restoreRuntimeStorage() {
       checkBoardIndex: sharedState.pushes.length === 0
     }).catch(() => { });
   }
+})();
 
-  // 自動將最新的 content.js 注入所有已開啟的 http/https 網頁，載入套件後不需逐一重整分頁
+// 僅在安裝/更新/重新載入套件時，將最新的 content.js 注入所有已開啟的 http/https 網頁（免逐一重整分頁）。
+// 不可在每次 Service Worker 喚醒時注入，否則會清掉各分頁正在飛的彈幕與待播佇列。
+chrome.runtime.onInstalled.addListener(() => {
   if (chrome.scripting && chrome.tabs) {
     chrome.tabs.query({ url: ['http://*/*', 'https://*/*'] }, (tabs) => {
       if (chrome.runtime.lastError || !Array.isArray(tabs)) return;
@@ -1892,7 +2081,7 @@ bootstrapPromise = (async function restoreRuntimeStorage() {
         chrome.scripting.executeScript(
           {
             target: { tabId: tab.id },
-            files: ['content.js']
+            files: ['config.js', 'content.js']
           },
           () => {
             void chrome.runtime.lastError;
@@ -1901,4 +2090,4 @@ bootstrapPromise = (async function restoreRuntimeStorage() {
       }
     });
   }
-})();
+});

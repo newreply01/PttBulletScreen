@@ -16,43 +16,47 @@
   const urlObj = new URL(window.location.href);
   const autoLiveOnLoad = urlObj.searchParams.get('autolive') === '1';
 
-  const ALLOWED_MIN_INTERVAL_SECONDS = [3, 5, 10, 15, 30, 60, 120, 180, 300];
-  const DEFAULT_MIN_INTERVAL_SECONDS = 30;
-  const ALLOWED_FLY_DURATION_SECONDS = [5, 7, 10, 14, 18];
-  const DEFAULT_FLY_DURATION_SECONDS = 10;
-  const ALLOWED_MAX_BATCH_COUNTS = [3, 5, 10, 15, 20, 30, 50];
-  const DEFAULT_MAX_BATCH_COUNT = 10;
-  const INITIAL_PREVIEW_WINDOW_MINUTES = 5;
-  const INITIAL_PREVIEW_MAX_WAVES = 3;
+  // 共用設定由 config.js 提供（manifest / executeScript 皆在 content.js 之前注入）
+  const CFG = globalThis.PTT_DANMAKU_CONFIG;
+  const normalizeOption = globalThis.pttDanmakuNormalizeOption;
+  const DEFAULT_BOARD = CFG.DEFAULT_BOARD;
+  const DEFAULT_QUERY = CFG.DEFAULT_QUERY;
+  const INITIAL_PREVIEW_WINDOW_MINUTES = CFG.INITIAL_PREVIEW_WINDOW_MINUTES;
+  const INITIAL_PREVIEW_MAX_WAVES = CFG.INITIAL_PREVIEW_MAX_WAVES;
+  // 背景完整抓文最長約需：看板索引 2 頁 + 文章 HTML（各 15s 逾時）+ 增量補齊，60s 足以涵蓋
+  const TAB_POLL_RESPONSE_TIMEOUT_MS = 60000;
 
-  function normalizeIntervalSeconds(rawSec) {
-    const parsed = parseInt(rawSec, 10);
-    return ALLOWED_MIN_INTERVAL_SECONDS.includes(parsed) ? parsed : DEFAULT_MIN_INTERVAL_SECONDS;
-  }
+  const normalizeIntervalSeconds = (rawSec) => normalizeOption(CFG.MIN_FETCH_INTERVAL_SECONDS, rawSec);
+  const normalizeFlyDurationSeconds = (rawSec) => normalizeOption(CFG.FLY_DURATION_SECONDS, rawSec);
+  const normalizeMaxBatchCount = (rawVal) => normalizeOption(CFG.MAX_BATCH_COUNT, rawVal);
 
-  function normalizeFlyDurationSeconds(rawSec) {
-    const parsed = parseInt(rawSec, 10);
-    return ALLOWED_FLY_DURATION_SECONDS.includes(parsed) ? parsed : DEFAULT_FLY_DURATION_SECONDS;
-  }
+  let minFetchIntervalSeconds = CFG.MIN_FETCH_INTERVAL_SECONDS.defaultValue;
+  let flyDurationSeconds = CFG.FLY_DURATION_SECONDS.defaultValue;
+  let maxBatchCount = CFG.MAX_BATCH_COUNT.defaultValue;
 
-  function normalizeMaxBatchCount(rawVal) {
-    const parsed = parseInt(rawVal, 10);
-    return ALLOWED_MAX_BATCH_COUNTS.includes(parsed) ? parsed : DEFAULT_MAX_BATCH_COUNT;
-  }
-
-  let minFetchIntervalSeconds = DEFAULT_MIN_INTERVAL_SECONDS;
-  let flyDurationSeconds = DEFAULT_FLY_DURATION_SECONDS;
-  let maxBatchCount = DEFAULT_MAX_BATCH_COUNT;
-
-  function sendBgMessage(msg) {
+  // timeoutMs > 0 時，背景遲遲未回應（SW 重啟中訊息遺失、抓文卡住等）會自動 reject，避免呼叫端旗標永久卡住
+  function sendBgMessage(msg, timeoutMs = 0) {
     return new Promise((resolve, reject) => {
       if (!chrome?.runtime?.id) {
         reject(new Error('Extension context invalidated'));
         return;
       }
+      let settled = false;
+      let timer = null;
+      if (timeoutMs > 0) {
+        timer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          reject(new Error(`Background response timeout (${msg?.type})`));
+        }, timeoutMs);
+      }
       chrome.runtime.sendMessage(msg, (res) => {
-        if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message));
+        const lastErr = chrome.runtime.lastError;
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (lastErr) {
+          reject(new Error(lastErr.message));
         } else {
           resolve(res);
         }
@@ -170,8 +174,8 @@
 
   const activeArticleUrl = IS_WEB_PTT_MODE ? `${window.location.origin}${window.location.pathname}` : null;
   const activeBoard = IS_WEB_PTT_MODE
-    ? (window.location.pathname.match(/^\/bbs\/([^/]+)\/M\.\d+\.A\.[^.]+\.html$/i)?.[1] || 'Stock')
-    : 'Stock';
+    ? (window.location.pathname.match(/^\/bbs\/([^/]+)\/M\.\d+\.A\.[^.]+\.html$/i)?.[1] || DEFAULT_BOARD)
+    : DEFAULT_BOARD;
   const activeArticleEpoch = IS_WEB_PTT_MODE
     ? parseInt(window.location.pathname.match(/^\/bbs\/[^/]+\/M\.(\d+)\.A\.[^.]+\.html$/i)?.[1] || '0', 10)
     : 0;
@@ -184,9 +188,19 @@
   let booOnly = false;
   let keywords = [];
   let keywordFilterOnly = false;
-  let currentBoardName = activeBoard || 'Stock';
-  let currentQuery = '閒聊';
+  let currentBoardName = activeBoard || DEFAULT_BOARD;
+  let currentQuery = DEFAULT_QUERY;
   let lastFetchedAt = 0;
+  let lastFailedAt = 0;
+
+  // 與背景相同的冷卻規則：成功後等「更新間隔」，失敗後等 max(更新間隔, 5s)
+  function isFetchCooldownOver() {
+    const intervalMs = minFetchIntervalSeconds * 1000;
+    const now = Date.now();
+    if (lastFetchedAt > 0 && now - lastFetchedAt < intervalMs) return false;
+    if (lastFailedAt > 0 && now - lastFailedAt < Math.max(intervalMs, 5000)) return false;
+    return true;
+  }
 
   // ================= 2. 注入純淨透明 Shadow DOM 彈幕舞台 =================
   const existingHost = document.getElementById('ptt-danmaku-ext-host');
@@ -661,6 +675,9 @@
     if (typeof state.query === 'string') {
       currentQuery = state.query;
     }
+    if (typeof state.lastFailedAt === 'number') {
+      lastFailedAt = state.lastFailedAt;
+    }
     if (typeof state.lastFetchedAt === 'number' && state.lastFetchedAt > 0) {
       lastFetchedAt = state.lastFetchedAt;
     }
@@ -848,18 +865,20 @@
     ) {
       return;
     }
-    const intervalMs = minFetchIntervalSeconds * 1000;
-    if (lastFetchedAt > 0 && Date.now() - lastFetchedAt < intervalMs) {
+    if (!isFetchCooldownOver()) {
       return;
     }
     tabPollInFlight = true;
-    sendBgMessage({
-      type: 'BACKGROUND_LOAD_STOCK',
-      board: currentBoardName || 'Stock',
-      query: currentQuery ?? '閒聊',
-      enableLive: true,
-      force: false
-    })
+    sendBgMessage(
+      {
+        type: 'BACKGROUND_LOAD_STOCK',
+        board: currentBoardName || DEFAULT_BOARD,
+        query: currentQuery ?? DEFAULT_QUERY,
+        enableLive: true,
+        force: false
+      },
+      TAB_POLL_RESPONSE_TIMEOUT_MS
+    )
       .then(handleBackgroundLoadResponse)
       .catch(() => {})
       .finally(() => {
@@ -888,7 +907,7 @@
       pollingConfig: extractDomPollingConfig(),
       articleTitle: document.title || '',
       articleUrl: activeArticleUrl || '',
-      board: activeBoard || 'Stock',
+      board: activeBoard || DEFAULT_BOARD,
       articleEpoch: activeArticleEpoch || 0
     });
 
@@ -937,11 +956,11 @@
         drainLivePendingQueue();
       }
       if (shouldRenderDanmakuOnThisTab()) {
-        if (Date.now() - lastFetchedAt >= minFetchIntervalSeconds * 1000) {
+        if (isFetchCooldownOver()) {
           sendBgMessage({
             type: 'BACKGROUND_LOAD_STOCK',
-            board: currentBoardName || 'Stock',
-            query: currentQuery ?? '閒聊',
+            board: currentBoardName || DEFAULT_BOARD,
+            query: currentQuery ?? DEFAULT_QUERY,
             enableLive: true,
             force: false
           })
@@ -1010,8 +1029,8 @@
         try {
           const loadRes = await sendBgMessage({
             type: 'BACKGROUND_LOAD_STOCK',
-            board: currentBoardName || 'Stock',
-            query: currentQuery ?? '閒聊',
+            board: currentBoardName || DEFAULT_BOARD,
+            query: currentQuery ?? DEFAULT_QUERY,
             enableLive: true,
             force: false
           });
